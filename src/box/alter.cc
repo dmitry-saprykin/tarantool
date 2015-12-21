@@ -57,7 +57,7 @@ struct latch schema_lock = LATCH_INITIALIZER(schema_lock);
 #define NAME             2
 #define ENGINE           3
 #define FIELD_COUNT      4
-#define FLAGS            5
+#define OPTS             5
 
 /** _index columns */
 #define INDEX_ID         1
@@ -451,19 +451,19 @@ key_def_new_from_tuple(struct tuple *tuple)
 }
 
 static void
-space_def_init_flags(struct space_def *def, struct tuple *tuple)
+space_def_init_opts(struct space_def *def, struct tuple *tuple)
 {
-	/* default values of flags */
+	/* default values of opts */
 	def->opts = space_opts_default;
 
 	/* there is no property in the space */
-	if (tuple_field_count(tuple) <= FLAGS)
+	if (tuple_field_count(tuple) <= OPTS)
 		return;
 
-	const char *data = tuple_field(tuple, FLAGS);
+	const char *data = tuple_field(tuple, OPTS);
 	if (mp_typeof(*data) == MP_STR) {
 		/* Tarantool 1.6.x compatibility */
-		const char *flags = tuple_field_cstr(tuple, FLAGS);
+		const char *flags = tuple_field_cstr(tuple, OPTS);
 		while (flags && *flags) {
 			while (isspace(*flags)) /* skip space */
 				flags++;
@@ -477,7 +477,7 @@ space_def_init_flags(struct space_def *def, struct tuple *tuple)
 	}
 
 	opts_create_from_field(&def->opts, space_opts_reg, data,
-			ER_WRONG_SPACE_OPTIONS, FLAGS);
+			ER_WRONG_SPACE_OPTIONS, OPTS);
 }
 
 /**
@@ -495,7 +495,7 @@ space_def_create_from_tuple(struct space_def *def, struct tuple *tuple,
 	int engine_namelen = snprintf(def->engine_name, sizeof(def->engine_name),
 			 "%s", tuple_field_cstr(tuple, ENGINE));
 
-	space_def_init_flags(def, tuple);
+	space_def_init_opts(def, tuple);
 	space_def_check(def, namelen, engine_namelen, errcode);
 	access_check_ddl(def->uid);
 }

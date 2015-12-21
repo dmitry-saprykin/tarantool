@@ -148,9 +148,10 @@ end
  @example
  check_param_table(options, { user = 'string',
                               port = 'string, number',
-                              data = 'any' } )
+                              data = 'any',
+                              allow_unexpected = false } )
 --]]
-local function check_param_table(table, template, extra)
+local function check_param_table(table, template, allow_unexpected)
     if table == nil then
         return
     end
@@ -164,7 +165,7 @@ local function check_param_table(table, template, extra)
     end
     for k,v in pairs(table) do
         if template[k] == nil then
-            if not extra then
+            if not allow_unexpected then
                 box.error(box.error.ILLEGAL_PARAMS,
                           "options parameter '" .. k .. "' is unexpected")
             else
