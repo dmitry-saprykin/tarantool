@@ -140,7 +140,7 @@ new_uuid = 'a48a19a3-26c0-4f8c-a5b5-77377bab389b'
 server.admin("box.space._cluster:replace{{5, '{0}'}}".format(new_uuid))
 # Delete is OK
 server.admin("box.space._cluster:delete(5)")
-server.admin("box.info.vclock[5] == nil")
+server.admin("box.info.vclock[5] == 0")
 
 # Cleanup
 server.stop()
@@ -149,6 +149,7 @@ server.deploy()
 
 print '-------------------------------------------------------------'
 print 'gh-527: update vclock on delete from box.space._cluster'
+print 'gh-1219: Proper removal of servers with non-zero LSN from _cluster'
 print '-------------------------------------------------------------'
 
 # master server
@@ -166,43 +167,101 @@ replica.wait_lsn(master_id, master.get_lsn(master_id))
 replica_id = replica.get_param('server')['id']
 replica_uuid = replica.get_param('server')['uuid']
 sys.stdout.push_filter(replica_uuid, '<replica uuid>')
+
+replica.admin('box.info.server.id == %d' % replica_id)
+replica.admin('not box.info.server.ro')
+replica.admin('box.info.server.lsn == 0')
+replica.admin('box.info.vclock[%d] == 0' % replica_id)
 replica.admin('box.space._schema:insert{"test", 48}')
+replica.admin('box.info.server.lsn == 1')
+replica.admin('box.info.vclock[%d] == 1' % replica_id)
 
-replica.admin('box.info.server.id')
-replica.admin('box.info.server.ro')
-replica.admin('box.info.server.lsn') # 1
-replica.admin('box.info.vclock[%d]' % replica_id)
-
-master.admin('box.space._cluster:delete{%d}' % replica_id)
+master.admin('box.space._cluster:delete{%d} ~= nil' % replica_id)
 replica.wait_lsn(master_id, master.get_lsn(master_id))
-replica.admin('box.info.server.id')
+replica.admin('box.info.server.id ~= %d' % replica_id)
 replica.admin('box.info.server.ro')
-replica.admin('box.info.server.lsn') # -1
-replica.admin('box.info.vclock[%d]' % replica_id)
+replica.admin('box.info.server.lsn == -1')
+# gh-1219 - removal of server with LSN > 0 must not remove LSN from vclock
+replica.admin('box.info.vclock[%d] == 1' % replica_id)
 # replica is read-only
 replica.admin('box.space._schema:replace{"test", 48}')
 
+#
+# gh-1219 - server_id was used somethere in the past, start from the last
+# known value of LSN
+#
+master.admin('box.space._cluster:insert{%d, "%s"} ~= nil' %
+    (replica_id, replica_uuid))
+replica.wait_lsn(master_id, master.get_lsn(master_id))
+replica.admin('box.info.server.id == %d' % replica_id)
+replica.admin('not box.info.server.ro')
+replica.admin('box.info.server.lsn == 1')
+replica.admin('box.info.vclock[%d] == 1' % replica_id)
+master.admin('box.space._cluster:delete{%d} ~= nil' % replica_id)
+replica.wait_lsn(master_id, master.get_lsn(master_id))
+
 replica_id2 = 10
-master.admin('box.space._cluster:insert{%d, "%s"}' %
+master.admin('box.space._cluster:insert{%d, "%s"} ~= nil' %
     (replica_id2, replica_uuid))
 replica.wait_lsn(master_id, master.get_lsn(master_id))
-replica.admin('box.info.server.id')
-replica.admin('box.info.server.ro')
-replica.admin('box.info.server.lsn') # 0
-replica.admin('box.info.vclock[%d]' % replica_id)
-replica.admin('box.info.vclock[%d]' % replica_id2)
+replica.admin('box.info.server.id == %d' % replica_id2)
+replica.admin('not box.info.server.ro')
+replica.admin('box.info.server.lsn == 0')
+replica.admin('box.info.vclock[%d] == 1' % replica_id)
+replica.admin('box.info.vclock[%d] == 0' % replica_id2)
 
 replica_id3 = 11
 # Tuple is read-only
 server.admin("box.space._cluster:update(%d, {{'=', 1, %d}})" %
     (replica_id2, replica_id3))
 replica.wait_lsn(master_id, master.get_lsn(master_id))
-replica.admin('box.info.server.id')
+replica.admin('box.info.server.id == %d' % replica_id2)
+replica.admin('not box.info.server.ro')
+replica.admin('box.info.server.lsn == 0') # 0
+replica.admin('box.info.vclock[%d] == 1' % replica_id)
+replica.admin('box.info.vclock[%d] == 0' % replica_id2)
+replica.admin('box.info.vclock[%d] == nil' % replica_id3)
+
+master.admin('box.space._cluster:delete{%d} ~= nil' % replica_id2)
+replica.wait_lsn(master_id, master.get_lsn(master_id))
+replica.admin('box.info.server.id ~= %d' % replica_id)
 replica.admin('box.info.server.ro')
-replica.admin('box.info.server.lsn') # 0
-replica.admin('box.info.vclock[%d]' % replica_id)
-replica.admin('box.info.vclock[%d]' % replica_id2)
-replica.admin('box.info.vclock[%d]' % replica_id3)
+replica.admin('box.info.server.lsn == -1')
+replica.admin('box.info.vclock[%d] == 0' % replica_id2)
+
+# Sync master with replica
+replication_source = yaml.load(replica.admin('box.cfg.listen', silent = True))[0]
+sys.stdout.push_filter(replication_source, '<replication_source>')
+master.admin("box.cfg{ replication_source = '%s' }" % replication_source)
+
+master.wait_lsn(replica_id, replica.get_lsn(replica_id))
+master.admin('box.info.vclock[%d] == 1' % replica_id)
+master.admin('box.info.vclock[%d] == 0' % replica_id2)
+master.admin('box.info.vclock[%d] == nil' % replica_id3)
+
+master.admin("box.cfg{ replication_source = '' }")
+
+replica.stop()
+replica.cleanup(True)
+
+#
+# gh-1219 - proper removal of servers with non-zero LSN from _cluster
+#
+master.admin("box.snapshot()")
+master.admin('box.info.vclock[%d]' % replica_id)
+
+replica = TarantoolServer(server.ini)
+replica.script = 'replication/replica.lua'
+replica.vardir = server.vardir
+replica.rpl_master = master
+replica.deploy()
+replica.wait_lsn(master_id, master.get_lsn(master_id))
+# Check that replica_id was re-used
+replica.admin('box.info.server.id == %d' % replica_id)
+replica.admin('not box.info.server.ro')
+# All records were succesfully recovered.
+replica.admin('box.info.vclock[%d] == 1' % replica_id)
+replica.admin('box.info.vclock[%d] == 0' % replica_id2)
 replica.stop()
 replica.cleanup(True)
 
